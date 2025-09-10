@@ -1,3 +1,4 @@
+from curses import raw
 import os, json, time
 from typing import Tuple, List
 import clickhouse_connect
@@ -50,8 +51,8 @@ def enrich_json(data_json: str) -> str:
         if raw is None:
             raise ValueError("JSON vazio ou inválido")
 
-        track = Track.parse_obj({"record": raw}).record
-
+        track = Track.parse_obj(raw)
+        
         d = dict(raw)
 
         now_year = datetime.now().year
