@@ -11,13 +11,14 @@ services:
       - "8123:8123"
     volumes:
       - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
       - ch_data:/var/lib/clickhouse
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q OK"]
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' >/dev/null 2>&1"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -73,6 +74,28 @@ services:
     command: >
       sh -c "pip install --no-cache-dir minio clickhouse-connect pandas requests &&
              python script.py"
+
+  transformer:
+    image: python:3.12-slim
+    container_name: transformer
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    working_dir: /app
+    volumes:
+      - ./transform:/app/transform:ro
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: chuser
+      CLICKHOUSE_PASSWORD: chpass
+      CLICKHOUSE_DATABASE: default
+      SRC_TABLE: default.data_ingestion
+      DST_TABLE: default.working_g2
+      BATCH_SIZE: "5000"
+    command: >
+      sh -c "pip install --no-cache-dir clickhouse-connect pydantic &&
+             python -m transform.transform"
 
 volumes:
   ch_data:

@@ -1,8 +1,10 @@
-from curses import raw
-import os, json, time
-from typing import Tuple, List
-import clickhouse_connect
+import os
+import json
+import sys
+from typing import Tuple, List, Optional
 from datetime import datetime
+
+import clickhouse_connect
 from .schemas import Track
 
 CH_HOST   = os.getenv("CLICKHOUSE_HOST", "localhost")
@@ -16,17 +18,14 @@ DST_TABLE = os.getenv("DST_TABLE", "working_g2")
 
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "5000"))
 
+
 def ch_client():
     return clickhouse_connect.get_client(
-        host=CH_HOST,
-        port=CH_PORT,
-        username=CH_USER,
-        password=CH_PASS,
-        database=CH_DB
+        host=CH_HOST, port=CH_PORT, username=CH_USER, password=CH_PASS, database=CH_DB
     )
 
-def load_rows(limit: int = 10000, offset: int = 0) -> List[Tuple[int, str, str]]:
-    client = ch_client()
+
+def load_rows(client, limit: int = 10000, offset: int = 0) -> List[Tuple[int, str, str]]:
     q = f"""
         SELECT timestamp_unix, data_value, data_tag
         FROM {SRC_TABLE}
@@ -35,40 +34,41 @@ def load_rows(limit: int = 10000, offset: int = 0) -> List[Tuple[int, str, str]]
     """
     return client.query(q).result_rows
 
-def _safe_load_json(s: str):
+
+def _safe_load_json(s: Optional[str]):
     try:
         return json.loads(s) if s else None
     except Exception:
         return None
 
+
 def enrich_json(data_json: str) -> str:
     """
-    Espera JSON 'flat' com campos do Track.
-    Aplica validação/limpeza e adiciona dimensões derivadas.
+    Espera JSON 'flat' compatível com Track.
+    Valida via pydantic e adiciona campos derivados.
     """
     try:
-        raw = _safe_load_json(data_json)
-        if raw is None:
+        payload = _safe_load_json(data_json)
+        if payload is None:
             raise ValueError("JSON vazio ou inválido")
 
-        track = Track.parse_obj(raw)
-        
-        d = dict(raw)
+        track = Track.model_validate(payload)
+        d = dict(payload)
 
         now_year = datetime.now().year
-        d["duration_min"]  = track.duration_min
-        d["decade"]        = track.decade
-        d["age_years"]     = now_year - track.release_year
-        d["tempo_bucket"]  = track.tempo_bucket
-        d["energy_bucket"] = track.energy_bucket
-        d["is_english"]    = track.is_english
-        d["is_spanish"]    = track.is_spanish
-        d["label_group"]   = track.label_group
-        d["region"]        = track.region
+        d["duration_min"]   = track.duration_min
+        d["decade"]         = track.decade
+        d["age_years"]      = now_year - track.release_year
+        d["tempo_bucket"]   = track.tempo_bucket
+        d["energy_bucket"]  = track.energy_bucket
+        d["is_english"]     = track.is_english
+        d["is_spanish"]     = track.is_spanish
+        d["label_group"]    = track.label_group
+        d["region"]         = track.region
 
         # Flags úteis
-        d["is_long_track"] = 1 if track.duration_sec >= 420 else 0  # >= 7min
-        d["is_popular"]    = None if track.popularity is None else int(track.popularity >= 70)
+        d["is_long_track"]  = int((track.duration_sec or 0) >= 420)  # >= 7min
+        d["is_popular"]     = None if track.popularity is None else int(track.popularity >= 70)
         d["is_high_energy"] = None if track.energy is None else int(track.energy >= 70)
 
         d["status_validacao"] = "valido"
@@ -80,29 +80,42 @@ def enrich_json(data_json: str) -> str:
             ensure_ascii=False, separators=(",", ":")
         )
 
-def write_rows(rows: List[Tuple[int, str, str]]):
-    client = ch_client()
-    enriched = []
-    for ts, data_value, tag in rows:
-        enriched.append((ts, enrich_json(data_value), tag))
+
+def write_rows(client, rows: List[Tuple[int, str, str]]):
+    enriched = [(ts, enrich_json(data_value), tag) for ts, data_value, tag in rows]
     if enriched:
-        client.insert(DST_TABLE, enriched, column_names=["timestamp_unix","data_value","data_tag"])
+        client.insert(
+            DST_TABLE,
+            enriched,
+            column_names=["timestamp_unix", "data_value", "data_tag"]
+        )
+
 
 def main():
+    client = ch_client()
     offset = 0
     total_written = 0
+
     while True:
-        rows = load_rows(limit=BATCH_SIZE, offset=offset)
+        rows = load_rows(client, limit=BATCH_SIZE, offset=offset)
         if not rows:
             break
-        print(f"[transform] Lote offset={offset} -> {len(rows)} linhas…")
-        write_rows(rows)
+
+        print(f"[transform] Lote offset={offset} -> {len(rows)} linhas…", flush=True)
+        write_rows(client, rows)
         total_written += len(rows)
         offset += BATCH_SIZE
+
     if total_written == 0:
-        print("[transform] Nada a transformar (tabela Bronze vazia).")
+        print("[transform] Nada a transformar (tabela Bronze vazia).", flush=True)
     else:
-        print(f"[transform] OK. Linhas processadas: {total_written}")
+        print(f"[transform] OK. Linhas processadas: {total_written}", flush=True)
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

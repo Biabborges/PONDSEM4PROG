@@ -1,7 +1,7 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field, validator
 from typing import Optional
 from datetime import datetime
+from pydantic import BaseModel, Field, field_validator, AliasChoices, ConfigDict
 
 _PLACEHOLDER_NULLS = {"N/D", "#N/A"}
 _PLACEHOLDER_CATEG = {"-", "..", "?"}
@@ -10,13 +10,13 @@ def _nullify_placeholders(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     v = str(value).strip()
-    if v in _PLACEHOLDER_NULLS:
-        return None
-    if v in _PLACEHOLDER_CATEG:
+    if v in _PLACEHOLDER_NULLS or v in _PLACEHOLDER_CATEG:
         return None
     return v
 
 class Track(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+
     track_id: str = Field(..., description="ID único da faixa (ex: R0001)")
     artist: str = Field(..., min_length=1, description="Artista ou banda")
     country: Optional[str] = Field(None, description="País de origem")
@@ -28,27 +28,55 @@ class Track(BaseModel):
     tempo_bpm: Optional[int] = Field(None, ge=30, le=260, description="Tempo estimado em BPM")
     key: Optional[str] = Field(None, description="Tom/harmonia (ex: C#m)")
     mode: Optional[str] = Field(None, description="Modo (ex: major, minor)")
-    popularity: Optional[int] = Field(None, ge=0, le=100, description="Popularidade (0-100)")
-    danceability: Optional[int] = Field(None, ge=0, le=100, description="Dançabilidade (0-100)")
-    energy: Optional[int] = Field(None, ge=0, le=100, description="Energia (0-100)")
+
+    popularity: Optional[int] = Field(
+        None, ge=0, le=100,
+        validation_alias=AliasChoices('popularity', 'popularity_score')
+    )
+    danceability: Optional[int] = Field(None, ge=0, le=100, description="Dançabilidade 0-100")
+    energy: Optional[int] = Field(None, ge=0, le=100, description="Energia 0-100")
+
     loudness_db: Optional[float] = Field(None, description="Loudness em dB")
-    label: Optional[str] = Field(None, description="Gravadora")
+
+    label: Optional[str] = Field(
+        None, description="Gravadora",
+        validation_alias=AliasChoices('label', 'record_label')
+    )
     language: Optional[str] = Field(None, description="Idioma predominante (ex: English, Spanish)")
+    live_recording: Optional[bool] = Field(
+        None, description="Gravação ao vivo",
+        validation_alias=AliasChoices('live_recording', 'is_live')
+    )
     explicit: Optional[bool] = Field(None, description="Possui conteúdo explícito")
-    live_recording: Optional[bool] = Field(None, description="Gravação ao vivo")
     notes: Optional[str] = Field(None, description="Observações")
 
-    @validator("artist", "country", "subgenre", "album", "track_title", "key", "mode", "label", "language", "notes", pre=True, always=True)
+    @field_validator("artist", "country", "subgenre", "album", "track_title",
+                     "key", "mode", "label", "language", "notes", mode="before")
+    @classmethod
     def _clean_str(cls, v):
         v = _nullify_placeholders(v)
         return v if v is None else str(v).strip()
 
-    @validator("release_year")
-    def _valid_year(cls, v):
+    @field_validator("release_year")
+    @classmethod
+    def _valid_year(cls, v: int):
         now_year = datetime.now().year
         if v < 1950 or v > now_year:
             raise ValueError(f"Ano inválido: {v}")
         return v
+
+    @field_validator("danceability", "energy", "popularity", mode="before")
+    @classmethod
+    def _scale_percent_like(cls, v):
+        if v is None:
+            return None
+        try:
+            fv = float(v)
+        except Exception:
+            return v
+        if 0.0 <= fv <= 1.0:
+            return int(round(fv * 100))
+        return int(round(fv))
 
     @property
     def duration_min(self) -> float:
@@ -75,10 +103,8 @@ class Track(BaseModel):
         if self.tempo_bpm is None:
             return None
         bpm = self.tempo_bpm
-        if bpm < 90:
-            return "slow"
-        if bpm <= 130:
-            return "medium"
+        if bpm < 90: return "slow"
+        if bpm <= 130: return "medium"
         return "fast"
 
     @property
@@ -86,10 +112,8 @@ class Track(BaseModel):
         if self.energy is None:
             return None
         e = self.energy
-        if e < 34:
-            return "low"
-        if e < 67:
-            return "mid"
+        if e < 34: return "low"
+        if e < 67: return "mid"
         return "high"
 
     @property
@@ -111,24 +135,8 @@ class Track(BaseModel):
             return None
         c = self.country.strip().lower()
         americas = {"united states", "canada", "mexico", "brazil", "argentina", "chile", "colombia"}
-        europe = {"united kingdom", "finland", "germany", "france", "italy", "spain", "portugal", "sweden", "norway", "denmark", "netherlands", "belgium", "ireland"}
-        if c in americas:
-            return "Americas"
-        if c in europe:
-            return "Europe"
+        europe   = {"united kingdom", "finland", "germany", "france", "italy", "spain",
+                    "portugal", "sweden", "norway", "denmark", "netherlands", "belgium", "ireland"}
+        if c in americas: return "Americas"
+        if c in europe:   return "Europe"
         return "Other"
-
-class Envelope(BaseModel):
-    """
-    Estrutura esperada dentro do JSON bruto em Bronze:
-    {
-      "track_id": "...",
-      "artist": "...",
-      ...
-    }
-    """
-    record: Track
-
-    @validator("record", pre=True)
-    def _accept_flat_or_nested(cls, v):
-        return v if isinstance(v, dict) and "track_id" not in v else v

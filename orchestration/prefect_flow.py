@@ -9,13 +9,8 @@ def extract_load_bronze():
 @task
 def transform_silver():
     project_root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env.setdefault("CLICKHOUSE_HOST", "localhost")
-    env.setdefault("SRC_TABLE", "default.data_ingestion")
-    env.setdefault("DST_TABLE", "default.working_g2")
-
-    cmd = [sys.executable, "-m", "transform.transform"]
-    subprocess.check_call(cmd, cwd=str(project_root), env=env)
+    cmd = ["docker", "compose", "-f", str(project_root / "docker-compose.yml"), "run", "--rm", "transformer"]
+    subprocess.check_call(cmd, cwd=str(project_root))
 
 @flow
 def etl_flow():

@@ -1,0 +1,4 @@
+<clickhouse>
+  <listen_host>0.0.0.0</listen_host>
+  <prefer_ipv6>0</prefer_ipv6>
+</clickhouse>
