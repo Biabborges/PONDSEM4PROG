@@ -94,8 +94,8 @@ services:
       DST_TABLE: default.working_g2
       BATCH_SIZE: "5000"
     command: >
-      sh -c "pip install --no-cache-dir clickhouse-connect pydantic &&
-             python -m transform.transform"
+      sh -c "pip install --no-cache-dir clickhouse-connect pydantic pandas &&
+            python -m transform.transform"
 
 volumes:
   ch_data:
